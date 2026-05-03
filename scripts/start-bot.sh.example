@@ -1,0 +1,20 @@
+#!/bin/bash
+# Example: Start a specific agent bot
+# Copy this to start-agent.sh and customize per agent
+
+AGENT=$1
+if [ -z "$AGENT" ]; then
+  echo "Usage: ./start-agent.sh <agent-name>"
+  echo "Examples: claude, lisa, nyx, kael"
+  exit 1
+fi
+
+ENV_FILE="${AGENT}.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "Error: $ENV_FILE not found"
+  exit 1
+fi
+
+mkdir -p data
+echo "Starting $AGENT bot..."
+exec node --env-file="$ENV_FILE" --import=tsx src/index.ts
