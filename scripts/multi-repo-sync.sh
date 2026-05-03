@@ -134,10 +134,15 @@ while IFS= read -r gitdir; do
     continue
   fi
 
-  # Stage changes
+  # Stage changes (skip .env files)
   echo "  [STAGE] Adding changes..." | tee -a "$LOG_FILE"
   if [ "$DRY_RUN" = false ]; then
     git -C "$repo_path" add -A 2>&1 | tee -a "$LOG_FILE"
+    # Unstage any .env files — never commit secrets
+    git -C "$repo_path" diff --cached --name-only | grep -E '\.env($|\.)' | while read -r f; do
+      echo "  [SKIP] Unstaging secret file: $f" | tee -a "$LOG_FILE"
+      git -C "$repo_path" reset HEAD -- "$f" 2>&1 | tee -a "$LOG_FILE"
+    done
   fi
 
   # Secret scan
