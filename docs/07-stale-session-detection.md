@@ -1,6 +1,6 @@
 # Stale Session Detection & Auto-Cleanup
 
-> Technical deep dive into the stale session detection system implemented on 2026-05-03. This eliminates "No conversation found" errors after system restarts.
+> Technical deep dive into the stale session detection system. This is a **hardening modification** added to the upstream bot to eliminate "No conversation found" errors after system restarts.
 
 ---
 
@@ -19,179 +19,108 @@ stderr: No conversation found with session ID: ef7d06fe-c49a-44ed-ae00-659713790
 4. Bot looks up thread in DB → finds mapping → tries to resume non-existent session
 5. Claude CLI errors out, user gets broken experience
 
+**The upstream bot** (`fredchu/discord-claude-code-bot`) does NOT handle this. It will keep trying the stale session forever.
+
+**This hardened version** detects stale sessions and creates fresh ones transparently.
+
 ---
 
 ## The Solution
 
-Three-layer defense implemented in `src/index.ts` and `src/threads.ts`:
+Modified `getOrCreate()` in `src/index.ts` with automatic stale session detection.
 
-### Layer 1: `isSessionValid()` — Per-Session Validation
+### How It Works
 
-```typescript
-function isSessionValid(entry: ThreadEntry): boolean {
-  const sanitized = entry.cwd.replace(/[^a-zA-Z0-9]/g, "-");
-  const projectDir = path.join(CLAUDE_HOME, "projects", sanitized);
-  const sessionFile = path.join(projectDir, `${entry.sessionId}.jsonl`);
-  
-  try {
-    const stat = fs.statSync(sessionFile);
-    return stat.isFile();
-  } catch {
-    return false;
-  }
-}
-```
+When the bot receives a message:
 
-**What it does:**
-- Takes a database entry (threadId, sessionId, cwd)
-- Sanitizes the working directory name (replaces special chars with `-`)
-- Constructs the expected session file path
-- Checks if file exists and is a regular file
-- Returns boolean
+1. Calls `getOrCreate(threadId, defaultCwd)`
+2. Checks SQLite for existing mapping
+3. If found, validates that the session file exists on disk
+4. If session file is missing:
+   - Creates a fresh session UUID
+   - Updates the database with the new mapping
+   - User gets a new session transparently
+5. If session file exists:
+   - Returns existing mapping (normal operation)
 
-**Why sanitize cwd:**
-- Claude Code CLI sanitizes working directory names for project folders
-- Example: `/home/user/my-project` → `my-project`
-- Example: `/home/user/my.project` → `my-project`
-- Must match Claude's sanitization logic exactly
+### Code Location
 
-### Layer 2: Updated `getOrCreate()` — Real-Time Detection
+The fix is integrated directly into `getOrCreate()` in `src/index.ts` (around line 110):
 
 ```typescript
-async function getOrCreate(threadId: string, cwd: string): Promise<ThreadEntry> {
-  // 1. Try to get existing mapping
-  const existing = stmtGet.get(threadId);
-  
-  if (existing) {
-    // 2. Validate session file exists
-    if (isSessionValid(existing)) {
-      return existing;  // Session is valid, use it
-    }
-    
-    // 3. Session is stale! Delete mapping
-    console.log(`[discord-cc-bot] clearing stale session for thread ${threadId} — session file missing, creating fresh session`);
-    stmtDelete.run(threadId);
-  }
-  
-  // 4. Create fresh session
-  const newEntry: ThreadEntry = {
-    threadId,
-    sessionId: crypto.randomUUID(),
-    cwd,
-    model: "sonnet",
-    createdAt: Date.now(),
-    started: 0,
-    lastBotMessageId: null,
-    isLocalResume: 0
-  };
-  
-  stmtUpsert.run(
-    newEntry.threadId,
-    newEntry.sessionId,
-    newEntry.cwd,
-    newEntry.model,
-    newEntry.createdAt,
-    newEntry.started,
-    newEntry.lastBotMessageId,
-    newEntry.isLocalResume
-  );
-  
-  return newEntry;
-}
-```
-
-**What it does:**
-- Called on every incoming message
-- Checks existing mapping
-- Validates session file exists
-- If stale: logs cleanup, deletes mapping, creates fresh UUID
-- If valid: returns existing entry (no disruption)
-
-**Key design decision:**
-- Validation happens on EVERY message, not just startup
-- This catches session files deleted mid-operation
-- Users get fresh sessions transparently
-
-### Layer 3: `cleanupStaleSessions()` — Startup Scan
-
-```typescript
-function cleanupStaleSessions(): void {
-  const allEntries = stmtAll.all() as ThreadEntry[];
-  let removed = 0;
-  
-  for (const entry of allEntries) {
-    if (!isSessionValid(entry)) {
-      stmtDelete.run(entry.threadId);
-      console.log(`[discord-cc-bot] removed stale mapping for thread ${entry.threadId}`);
-      removed++;
+function getOrCreate(map: ThreadMap, threadId: string, defaultCwd: string): ThreadEntry {
+  if (!map[threadId]) {
+    const row = stmtGet.get(threadId) as any;
+    if (row) {
+      // ===== STALE SESSION DETECTION =====
+      const entry = rowToEntry(row);
+      const sanitized = entry.cwd.replace(/[^a-zA-Z0-9]/g, "-");
+      const projectDir = path.join(CLAUDE_HOME, "projects", sanitized);
+      const sessionFile = path.join(projectDir, `${entry.sessionId}.jsonl`);
+      
+      try {
+        const stat = fs.statSync(sessionFile);
+        if (stat.isFile()) {
+          map[threadId] = entry;  // Valid session
+        } else {
+          // Stale session — create fresh
+          console.log(`[discord-cc-bot] clearing stale session for thread ${threadId}`);
+          map[threadId] = {
+            sessionId: crypto.randomUUID(),
+            cwd: entry.cwd,
+            model: entry.model,
+            createdAt: Date.now(),
+            started: false,
+          };
+          saveEntry(threadId, map[threadId]);
+        }
+      } catch {
+        // File doesn't exist — stale session
+        console.log(`[discord-cc-bot] clearing stale session for thread ${threadId}`);
+        map[threadId] = {
+          sessionId: crypto.randomUUID(),
+          cwd: entry.cwd,
+          model: entry.model,
+          createdAt: Date.now(),
+          started: false,
+        };
+        saveEntry(threadId, map[threadId]);
+      }
+      // ===== END STALE SESSION DETECTION =====
+    } else {
+      // No mapping exists — create new
+      map[threadId] = {
+        sessionId: crypto.randomUUID(),
+        cwd: defaultCwd,
+        model: "opus",
+        createdAt: Date.now(),
+        started: false,
+      };
+      saveEntry(threadId, map[threadId]);
     }
   }
-  
-  if (removed > 0) {
-    console.log(`[discord-cc-bot] cleanup complete: removed ${removed} stale session mapping(s)`);
-  }
+  return map[threadId];
 }
 ```
 
-**What it does:**
-- Scans ALL thread mappings on bot startup
-- Checks each session file
-- Removes invalid mappings in batch
-- Logs summary count
+### Session File Path Construction
 
-**Integration point:**
-```typescript
-client.once(Events.ClientReady, async (c) => {
-  console.log(`[discord-cc-bot] ready as ${c.user.tag}`);
-  cleanupStaleSessions();  // Clean stale mappings on startup
-  // ... rest of initialization
-});
+The bot must match Claude Code CLI's project directory naming:
+
+| Working Directory | Sanitized Name | Project Path |
+|-------------------|---------------|--------------|
+| `/home/user/my-project` | `my-project` | `~/.claude/projects/my-project/` |
+| `/home/user/my.project` | `my-project` | `~/.claude/projects/my-project/` |
+| `/home/user/my_project` | `my-project` | `~/.claude/projects/my-project/` |
+
+**Sanitization rule:** Replace all non-alphanumeric characters with `-`.
+
+### Log Messages
+
+When stale session detected:
 ```
-
----
-
-## Database Changes
-
-### Added Prepared Statement
-
-```typescript
-const stmtDelete = db.prepare(`
-  DELETE FROM threads WHERE threadId = ?
-`);
+[discord-cc-bot] clearing stale session for thread 14895202...
 ```
-
-### Schema (Unchanged)
-
-```sql
-CREATE TABLE threads (
-  threadId TEXT PRIMARY KEY,
-  sessionId TEXT NOT NULL,
-  cwd TEXT NOT NULL,
-  model TEXT,
-  createdAt INTEGER,
-  started INTEGER DEFAULT 0,
-  lastBotMessageId TEXT,
-  isLocalResume INTEGER DEFAULT 0
-);
-```
-
----
-
-## Log Messages
-
-### Stale Session Detected (Per-Message)
-```
-[discord-cc-bot] clearing stale session for thread 1489520293847563 — session file missing, creating fresh session
-```
-
-### Startup Cleanup
-```
-[discord-cc-bot] cleanup complete: removed 3 stale session mapping(s)
-```
-
-### Normal Operation (No Output)
-- When session is valid, no log spam
-- Only logs on cleanup actions
 
 ---
 
@@ -201,42 +130,21 @@ CREATE TABLE threads (
 
 ```bash
 # 1. Insert fake stale entry
-sqlite3 threads.db "INSERT INTO threads (threadId, sessionId, cwd, model, createdAt, started, isLocalResume) 
-  VALUES ('test-stale-123', 'fake-session-id', '/home/user/test', 'sonnet', 1777000000000, 0, 0);"
+sqlite3 threads.db "INSERT INTO threads (threadId, sessionId, cwd, model, createdAt, started, isLocalResume)
+  VALUES ('test-stale-123', 'fake-session-id', '/home/user/test', 'opus', 1777000000000, 0, 0);"
 
 # 2. Start bot
 systemctl --user restart discord-claude-ubuntu.service
 
-# 3. Check logs
+# 3. Send message in a thread (or simulate by calling getOrCreate)
+
+# 4. Check logs
 journalctl --user -u discord-claude-ubuntu.service -n 20 --no-pager
-# Should show: "removed stale mapping for thread test-stale-123"
+# Should show: "clearing stale session for thread test-stale-123"
 
-# 4. Verify entry removed
-sqlite3 threads.db "SELECT * FROM threads WHERE threadId = 'test-stale-123';"
-# Should return nothing
-
-# 5. Send message in existing thread (with old session)
-# Bot should transparently create fresh session
-```
-
-### Automated Test
-
-```typescript
-// Pseudocode for test
-test('stale session cleanup', () => {
-  // Insert fake stale entry
-  db.prepare("INSERT ...").run('stale-thread', 'fake-session', '/tmp/test');
-  
-  // Call cleanup
-  const removed = cleanupStaleSessions();
-  
-  // Assert removed count
-  expect(removed).toBe(1);
-  
-  // Assert entry gone
-  const entry = db.prepare("SELECT * FROM threads WHERE threadId = ?").get('stale-thread');
-  expect(entry).toBeUndefined();
-});
+# 5. Verify entry was updated (new sessionId)
+sqlite3 threads.db "SELECT sessionId FROM threads WHERE threadId = 'test-stale-123';"
+# Should be a NEW UUID, not "fake-session-id"
 ```
 
 ---
@@ -246,8 +154,7 @@ test('stale session cleanup', () => {
 ### Case 1: Session File Deleted Mid-Conversation
 - User manually deletes session file
 - Next message triggers `getOrCreate()`
-- `isSessionValid()` returns false
-- Fresh session created transparently
+- Stale session detected, fresh session created
 
 ### Case 2: Working Directory Changed
 - Bot configured with new `cwd`
@@ -262,14 +169,13 @@ test('stale session cleanup', () => {
 
 ### Case 4: Empty Database
 - First bot startup, no threads table entries
-- `cleanupStaleSessions()` returns 0
+- `getOrCreate()` creates new entry
 - No errors, normal operation
 
 ### Case 5: Large Database (1000+ threads)
-- Startup scan iterates all entries
-- Synchronous operation, blocks for milliseconds
-- Better-sqlite3 is fast enough for this scale
-- If database grows >10k, consider async batching
+- Per-message validation is fast (single file stat)
+- No full scan needed
+- Scales to any database size
 
 ---
 
@@ -277,8 +183,7 @@ test('stale session cleanup', () => {
 
 | Operation | Time | Frequency |
 |-----------|------|-----------|
-| `isSessionValid()` | ~0.1ms | Per message |
-| `cleanupStaleSessions()` | ~1ms per 100 entries | Startup only |
+| Session file validation | ~0.1ms | Per message |
 | `getOrCreate()` (valid) | ~0.2ms | Per message |
 | `getOrCreate()` (stale) | ~0.5ms | Rare |
 
@@ -286,10 +191,20 @@ test('stale session cleanup', () => {
 
 ---
 
+## Comparison with Upstream
+
+| Feature | Upstream Bot | This Hardened Version |
+|---------|-------------|----------------------|
+| Stale session detection | No | Yes |
+| "No conversation found" errors | Recurring | Eliminated |
+| User experience after restart | Broken | Seamless |
+| Code changes required | None | `getOrCreate()` modification |
+
+---
+
 ## Future Improvements
 
-1. **Async cleanup** — Move startup scan to background if database is large
-2. **Metrics export** — Track stale session rate for monitoring
-3. **Session archival** — Move stale sessions to archive instead of deleting
-4. **Configurability** — Make `CLAUDE_HOME` path configurable per-agent
-5. **Batch size limit** — Limit startup cleanup to N entries at a time
+1. **Metrics export** — Track stale session rate for monitoring
+2. **Session archival** — Move stale sessions to archive instead of discarding
+3. **Configurability** — Make `CLAUDE_HOME` path configurable
+4. **Pre-emptive cleanup** — Run validation on all entries at startup

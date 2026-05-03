@@ -1,6 +1,6 @@
 # Setup Guide
 
-> From zero to a running Claude Discord bot with multi-agent coordination.
+> From zero to a running Claude Discord bot.
 
 ---
 
@@ -14,12 +14,11 @@
 
 ---
 
-## Step 1: Bot Source Code
+## Step 1: Clone This Repository
 
 ```bash
-# Clone the bot
-git clone https://github.com/fredchu/discord-claude-code-bot.git
-cd discord-claude-code-bot
+git clone https://github.com/wilsonhoe/claude_discord.git
+cd claude_discord
 
 # Install dependencies
 npm install
@@ -56,17 +55,17 @@ Create `.env` in the bot root:
 
 ```bash
 # Required
-DISCORD_BOT_TOKEN=<your-discord-bot-token>
+DISCORD_TOKEN=<your-discord-bot-token>
 
 # Optional but recommended
-CLAUDE_HOME=/home/youruser/.claude
-THREADS_DB_PATH=threads.db
-AGENT_SYSTEM_PROMPT="You are Claude, an AI assistant running on Ubuntu. You help users with software engineering tasks."
+DEFAULT_CWD=/home/youruser/projects       # Default working directory
+CLAUDE_BIN=claude                           # Claude CLI command
+GUILD_ID=<your-discord-server-id>           # Restrict slash commands to guild
 ```
 
 **Security:**
 - Never commit `.env`
-- Add `.env` to `.gitignore`
+- Add `.env` to `.gitignore` (already done)
 - Store backup tokens in a password manager
 
 ---
@@ -82,7 +81,7 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/youruser/discord-claude-code-bot
+WorkingDirectory=/home/youruser/claude_discord
 ExecStart=node --env-file=.env --import=tsx src/index.ts
 Restart=on-failure
 RestartSec=10
@@ -135,195 +134,40 @@ systemctl --user restart discord-claude-ubuntu.service
 
 ---
 
-## Step 7: Multi-Agent Setup (Lisa, Nyx, Kael)
+## Step 7: Health Monitoring Setup
 
-### 7.1 Create Additional Discord Applications
+### 7.1 Health Check Script
 
-Repeat Step 2 for each agent:
-- Lisa#7140
-- Nyx_Growth#1299
-- Kael_Executor#8338
-
-### 7.2 Code Changes
-
-The bot codebase supports multi-agent deployment with two changes to `src/index.ts`:
-
-1. **THREADS_DB_PATH** — Override default `threads.db`:
-   ```typescript
-   const dbPath = process.env.THREADS_DB_PATH || "threads.db";
-   ```
-
-2. **AGENT_SYSTEM_PROMPT** — Override default system prompt:
-   ```typescript
-   const systemPrompt = process.env.AGENT_SYSTEM_PROMPT || defaultPrompt;
-   ```
-
-### 7.3 Per-Agent Environment Files
-
-Create separate env files:
-
-**lisa.env:**
-```bash
-DISCORD_BOT_TOKEN=<lisa-token>
-THREADS_DB_PATH=data/lisa-threads.db
-AGENT_SYSTEM_PROMPT="You are Lisa, an AI executor agent. Your role is to carry out tasks assigned by Claude. You are efficient, thorough, and report results clearly."
-```
-
-**nyx.env:**
-```bash
-DISCORD_BOT_TOKEN=<nyx-token>
-THREADS_DB_PATH=data/nyx-threads.db
-AGENT_SYSTEM_PROMPT="You are Nyx, an AI growth agent. Your role is marketing, outreach, and community engagement."
-```
-
-**kael.env:**
-```bash
-DISCORD_BOT_TOKEN=<kael-token>
-THREADS_DB_PATH=data/kael-threads.db
-AGENT_SYSTEM_PROMPT="You are Kael, an AI executor agent. Your role is to execute technical tasks and provide detailed reports."
-```
-
-### 7.4 Start Script
-
-Create `start-agent.sh`:
+The `scripts/` directory contains:
 
 ```bash
-#!/bin/bash
-AGENT=$1
-if [ -z "$AGENT" ]; then
-  echo "Usage: ./start-agent.sh <agent-name>"
-  exit 1
-fi
-
-ENV_FILE="${AGENT}.env"
-if [ ! -f "$ENV_FILE" ]; then
-  echo "Error: $ENV_FILE not found"
-  exit 1
-fi
-
-mkdir -p data
-node --env-file="$ENV_FILE" --import=tsx src/index.ts
+# duplicate-check.sh — Check for duplicate bot instances
+# kill-stuck-sessions.sh — Kill stuck claude -p processes
 ```
 
-### 7.5 Per-Agent Systemd Services
-
-Create `~/.config/systemd/user/discord-lisa.service`:
-
-```ini
-[Unit]
-Description=Lisa Discord Bot
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/home/youruser/discord-claude-code-bot
-ExecStart=/home/youruser/discord-claude-code-bot/start-agent.sh lisa
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
-
-Repeat for `discord-nyx.service` and `discord-kael.service`.
-
-Enable all:
+Install them:
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable discord-lisa.service discord-nyx.service discord-kael.service
-systemctl --user start discord-lisa.service
-systemctl --user start discord-nyx.service
-systemctl --user start discord-kael.service
+chmod +x scripts/*.sh
+sudo cp scripts/duplicate-check.sh /usr/local/bin/
+sudo cp scripts/kill-stuck-sessions.sh /usr/local/bin/
 ```
 
----
-
-## Step 8: Bridge Setup (Agent Communication)
-
-### 8.1 Create Bridge Directories
-
-```bash
-mkdir -p ~/.openclaw/workspace-lisa
-mkdir -p ~/.openclaw/workspace-nyx
-mkdir -p ~/.openclaw/workspace-kael
-mkdir -p ~/.openclaw/workspace-william
-```
-
-### 8.2 Bridge Protocol Files
-
-Create canonical bridge files:
-
-```bash
-# For Lisa
-cat > ~/.openclaw/workspace-lisa/BRIDGE_LISA.md << 'EOF'
-# BRIDGE: Claude <-> Lisa
-# Protocol: Append-only markdown. Each message = new section.
-# ---
-EOF
-
-# For other agents, repeat pattern
-```
-
-### 8.3 Bridge Monitor Configuration
-
-Configure bridge monitor cron or systemd timer to watch for file changes:
-
-```bash
-# Example: Check bridge every 5 minutes
-*/5 * * * * /home/youruser/.openclaw/scripts/bridge-monitor.sh lisa
-```
-
----
-
-## Step 9: Health Monitoring Setup
-
-### 9.1 Health Check Script
-
-Create `scripts/session-health-check.sh`:
-
-```bash
-#!/bin/bash
-# Check for stuck claude -p processes
-STUCK=$(ps aux | grep "claude -p" | grep -v grep | awk '{if ($3 > 90.0) print $2}')
-for PID in $STUCK; do
-  RUNTIME=$(ps -o etime= -p $PID | tr -d ' ')
-  # Kill if running > 10 minutes
-  if [[ "$RUNTIME" =~ ^[0-9]+-[0-9]+:[0-9]+:[0-9]+$ ]] || [[ "$RUNTIME" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]]; then
-    echo "Killing stuck process $PID (CPU > 90%, runtime: $RUNTIME)"
-    kill -9 $PID
-  fi
-done
-```
-
-### 9.2 Duplicate Detection
-
-```bash
-#!/bin/bash
-# Check for duplicate bot instances
-COUNT=$(ps aux | grep "tsx src/index" | grep -v grep | wc -l)
-if [ "$COUNT" -gt 1 ]; then
-  echo "WARNING: $COUNT bot instances detected. Killing duplicates..."
-  pkill -9 -f "tsx src/index.ts"
-  systemctl --user restart discord-claude-ubuntu.service
-fi
-```
-
-### 9.3 Cron Schedule
+### 7.2 Cron Schedule
 
 ```bash
 # Edit crontab
 crontab -e
 
 # Add:
-*/15 * * * * /home/youruser/discord-claude-code-bot/scripts/session-health-check.sh
-*/5 * * * * /home/youruser/discord-claude-code-bot/scripts/duplicate-check.sh
+*/15 * * * * /usr/local/bin/kill-stuck-sessions.sh
+*/5 * * * * /usr/local/bin/duplicate-check.sh
 0 * * * * * systemctl --user status discord-claude-ubuntu.service --no-pager >> /tmp/bot-status.log
 ```
 
 ---
 
-## Step 10: Verification Checklist
+## Step 8: Verification Checklist
 
 - [ ] Bot responds to @mentions in threads
 - [ ] Single instance running (check `ps aux`)
@@ -331,9 +175,6 @@ crontab -e
 - [ ] SQLite database created and writable
 - [ ] Session files created in `~/.claude/projects/`
 - [ ] Slash commands registered (`/help`, `/new`)
-- [ ] Lisa/Nyx/Kael bots start independently
-- [ ] Bridge files are writable by Claude
-- [ ] Health check scripts executable
 - [ ] No duplicate processes after restart
 
 ---
@@ -347,4 +188,3 @@ crontab -e
 | Wrong `.env` file | "Invalid token" error | Verify token copied correctly |
 | Missing `tsx` | "Cannot find module" | Run `npm install` |
 | SQLite not writable | "database is locked" | Check file permissions on `threads.db` |
-| Bridge wrong path | Messages silently lost | Use canonical `~/.openclaw/workspace-<agent>/` |

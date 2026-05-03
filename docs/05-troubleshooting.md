@@ -162,10 +162,10 @@ ps aux | grep "claude -p" | grep -v grep
 ```
 
 **Option 3: Automated health check**
-See [docs/09-health-monitoring.md](docs/09-health-monitoring.md) for cron-based stuck process killer.
+Use `scripts/kill-stuck-sessions.sh` via cron every 15 minutes.
 
 ### Prevention
-- Implement `/stop` command in your bot
+- Implement `/stop` command in your bot (already included)
 - Add health check cron (every 15 min)
 - Monitor for processes running >10 minutes
 
@@ -193,41 +193,38 @@ sqlite3 threads.db "DELETE FROM threads;"
 systemctl --user restart discord-claude-ubuntu.service
 ```
 
-### Fix (Automatic — Implemented)
-If your bot has stale session detection (see [docs/07-stale-session-detection.md](docs/07-stale-session-detection.md)):
+### Fix (Automatic — Included in this repo)
+This hardened bot includes stale session detection:
 - Bot automatically detects missing session file
 - Deletes stale mapping
 - Creates fresh session
 - User gets new session transparently
 
+See [docs/07-stale-session-detection.md](docs/07-stale-session-detection.md) for technical details.
+
 ### Prevention
-- Implement `isSessionValid()` + `cleanupStaleSessions()` in bot code
+- Use this hardened version of the bot
 - Store session files on persistent storage (not tmpfs)
-- Run cleanup on startup and per-message
 
 ---
 
-## Issue 5: Agent (Lisa/Nyx/Kael) Stopped Responding
+## Issue 5: Bot Stopped Responding Entirely
 
 ### Symptoms
-- Agent not replying in Discord
+- Bot not replying in Discord
 - No error messages visible
-- Other agents still working
+- Process may or may not be running
 
 ### Diagnosis
 ```bash
-# Check agent-specific bot process
+# Check bot process
 ps aux | grep "tsx src/index" | grep -v grep
-# Check for agent-specific env file processes
 
-# Check agent session files
-ls -lh ~/.openclaw/agents/<agent>/sessions/
+# Check session sizes
+du -sh ~/.claude/projects/*/*.jsonl 2>/dev/null | sort -rh | head -5
 
-# Check session size
-wc -c ~/.openclaw/agents/<agent>/sessions/*.jsonl
-
-# Check token count (if available)
-grep -c "" ~/.openclaw/agents/<agent>/sessions/*.jsonl
+# Check logs for errors
+journalctl --user -u discord-claude-ubuntu.service -n 100 --no-pager
 ```
 
 ### Common Causes & Fixes
@@ -235,93 +232,33 @@ grep -c "" ~/.openclaw/agents/<agent>/sessions/*.jsonl
 **A. Session token limit (60k/60k)**
 ```bash
 # Clear session files
-rm ~/.openclaw/agents/<agent>/sessions/*.jsonl
-rm ~/.openclaw/agents/<agent>/sessions/*.lock
+rm ~/.claude/projects/*/*.jsonl
+rm ~/.claude/projects/*/*.lock
 
-# Remove Discord entries from sessions.json
-# Edit: ~/.openclaw/agents/<agent>/sessions.json
+# Clear thread database
+rm threads.db
 
-# Restart agent gateway
-systemctl --user restart openclaw-gateway-<agent>.service
+# Restart bot
+systemctl --user restart discord-claude-ubuntu.service
 ```
 
 **B. Context overflow (huge session file)**
 ```bash
-# Backup
-mv session.jsonl session.jsonl.bak
+# Find bloated session
+find ~/.claude/projects -name "*.jsonl" -size +100k
 
-# Create minimal session
-echo '{"type":"header","version":"1"}' > session.jsonl
-echo '{"type":"system","text":"System reset. Agent ready."}' >> session.jsonl
-
-# Restart gateway
-systemctl --user restart openclaw-gateway-<agent>.service
+# Truncate to minimal state
+# (Backup first, then keep only header + system message)
 ```
 
 **C. Bot process crashed**
 ```bash
-systemctl --user restart discord-<agent>.service
+systemctl --user restart discord-claude-ubuntu.service
 ```
 
 ---
 
-## Issue 6: Bridge Messages Not Being Read
-
-### Symptoms
-- Claude writes to bridge file
-- Lisa never responds
-- Bridge file keeps growing with Claude's messages
-
-### Diagnosis
-```bash
-# Verify bridge file exists at CORRECT path
-ls -la ~/.openclaw/workspace-lisa/BRIDGE_LISA.md
-
-# Check if wrong bridge file exists (deprecated)
-ls -la /home/user/bridge/LISA_TO_CLAUDE.md 2>/dev/null && echo "WRONG FILE EXISTS"
-
-# Check bridge monitor status
-systemctl --user status lisa-bridge-monitor.service --no-pager
-
-# Check bridge monitor logs
-journalctl --user -u lisa-bridge-monitor.service -n 20 --no-pager
-```
-
-### Fix
-
-**Step 1: Delete wrong bridge files**
-```bash
-rm /home/user/bridge/LISA_TO_CLAUDE.md 2>/dev/null
-rm /home/user/bridge/CLAUDE_TO_LISA.md 2>/dev/null
-```
-
-**Step 2: Verify correct bridge file**
-```bash
-cat ~/.openclaw/workspace-lisa/BRIDGE_LISA.md
-```
-
-**Step 3: Restart bridge monitor**
-```bash
-systemctl --user restart lisa-bridge-monitor.service
-```
-
-**Step 4: Send test message**
-```bash
-echo "## Test Message
-**From:** Claude
-**Time:** $(date)
-**Content:** If you read this, bridge is working.
----" >> ~/.openclaw/workspace-lisa/BRIDGE_LISA.md
-```
-
-### Prevention
-- Delete deprecated bridge paths after migration
-- Document canonical paths in agent training materials
-- Consider using GitHub Live Chat instead of file bridges
-
----
-
-## Issue 7: Systemd Service Fails to Start
+## Issue 6: Systemd Service Fails to Start
 
 ### Symptoms
 ```bash
@@ -338,7 +275,7 @@ systemctl --user status discord-claude-ubuntu.service --no-pager
 journalctl --user -u discord-claude-ubuntu.service -n 50 --no-pager
 
 # Test manual execution (for debugging only)
-cd ~/discord-claude-code-bot && node --env-file=.env --import=tsx src/index.ts
+cd ~/claude_discord && node --env-file=.env --import=tsx src/index.ts
 # (Ctrl+C after verifying error)
 ```
 
@@ -347,11 +284,11 @@ cd ~/discord-claude-code-bot && node --env-file=.env --import=tsx src/index.ts
 **A. .env file missing or invalid**
 ```bash
 # Verify .env exists
-ls -la ~/discord-claude-code-bot/.env
+ls -la ~/claude_discord/.env
 
 # Verify token format
-grep DISCORD_BOT_TOKEN ~/discord-claude-code-bot/.env
-# Should show: DISCORD_BOT_TOKEN=<64-char string>
+grep DISCORD_TOKEN ~/claude_discord/.env
+# Should show: DISCORD_TOKEN=<64-char string>
 ```
 
 **B. Working directory incorrect in service file**
@@ -364,9 +301,9 @@ grep WorkingDirectory ~/.config/systemd/user/discord-claude-ubuntu.service
 **C. Permission denied on database**
 ```bash
 # Fix ownership
-chmod 600 ~/discord-claude-code-bot/threads.db
+chmod 600 ~/claude_discord/threads.db
 # Or delete to recreate
-rm ~/discord-claude-code-bot/threads.db
+rm ~/claude_discord/threads.db
 ```
 
 **D. Node.js or tsx not found**
@@ -382,7 +319,7 @@ npx tsx --version
 
 ---
 
-## Issue 8: Slash Commands Not Appearing
+## Issue 7: Slash Commands Not Appearing
 
 ### Symptoms
 - Type `/` in Discord, bot commands don't show
@@ -391,24 +328,22 @@ npx tsx --version
 ### Fix
 ```bash
 # Re-register slash commands
-# This requires running the bot's command registration logic
-# Usually happens automatically on first start
+# This happens automatically on bot startup
+# Just restart the bot:
+systemctl --user restart discord-claude-ubuntu.service
 
-# Force re-registration by deleting bot from server and re-inviting
-# Or use Discord Developer Portal → Bot → OAuth2 → regenerate URL
-
-# Alternative: Some bots have a /sync command or registration script
-# Check bot source for registerCommands() function
+# Or force re-registration by deleting bot from server and re-inviting
 ```
 
 ### Prevention
 - Ensure `applications.commands` scope is in OAuth2 URL
 - Bot needs "Use Application Commands" permission
 - Commands may take up to 1 hour to propagate globally
+- Using `GUILD_ID` in .env restricts commands to one server (faster)
 
 ---
 
-## Issue 9: High CPU Usage from Bot
+## Issue 8: High CPU Usage from Bot
 
 ### Symptoms
 - Server CPU at 100%
@@ -450,37 +385,6 @@ crontab -l | grep discord
 
 ---
 
-## Issue 10: Agent Claims Task Complete But No File Exists
-
-### Symptoms
-- Agent: "I've created the file at /path/to/file.md"
-- `ls /path/to/file.md` → No such file or directory
-- Agent may double down on claim or admit error
-
-### Diagnosis
-```bash
-# Verify file non-existence
-ls -la /path/to/file.md
-
-# Check if file exists elsewhere
-find /home/user -name "file.md" 2>/dev/null
-
-# Check agent logs for actual commands executed
-journalctl --user -u discord-lisa.service -n 100 --no-pager | grep -i "write\|create\|save"
-```
-
-### Fix
-- Ask agent to re-execute with explicit path
-- Use absolute paths in all instructions
-- Implement grounding framework: require `ls` confirmation after file creation
-
-### Prevention
-- Grounding Framework: agents must provide evidence for factual claims
-- Add file existence checks in agent logic before reporting success
-- Use `test -f` or `fs.existsSync()` as validation step
-
----
-
 ## Quick Reference: Emergency Commands
 
 ```bash
@@ -488,15 +392,11 @@ journalctl --user -u discord-lisa.service -n 100 --no-pager | grep -i "write\|cr
 pkill -9 -f "tsx src/index.ts"
 pkill -9 -f "claude -p"
 
-# RESTART ALL SERVICES
+# RESTART SERVICE
 systemctl --user restart discord-claude-ubuntu.service
-systemctl --user restart discord-lisa.service
-systemctl --user restart discord-nyx.service
-systemctl --user restart discord-kael.service
 
-# CHECK ALL STATUSES
+# CHECK STATUS
 systemctl --user status discord-claude-ubuntu.service --no-pager
-systemctl --user status discord-lisa.service --no-pager
 
 # VIEW ALL LOGS
 journalctl --user -u discord-claude-ubuntu.service -f
@@ -522,8 +422,7 @@ rm ~/.claude/projects/*/*.lock 2>/dev/null
 |-------|-----------|----------------|
 | Duplicates | Kill all, systemd restart | Check health check scripts |
 | No response | Check systemd status | Regenerate Discord token |
-| Stuck task | /stop or kill PID | Check agent session size |
-| Session error | Clear DB mapping | Implement auto-cleanup |
-| Bridge lost | Delete wrong paths | Migrate to GitHub Live Chat |
-| Agent down | Restart agent service | Clear agent sessions |
+| Stuck task | /stop or kill PID | Check session size |
+| Session error | Clear DB mapping | Use auto-cleanup bot |
+| Bot down | Restart service | Check .env and dependencies |
 | High CPU | Kill stuck claude -p | Check for runaway cron |

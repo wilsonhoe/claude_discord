@@ -1,10 +1,10 @@
-# Claude Discord Multi-Agent System
+# Claude Discord Bot
 
-> Comprehensive documentation for a Claude Code CLI Discord bot serving as the coordination hub for a multi-agent AI team (Lisa, Nyx, Kael, William).
+> A Discord bot that integrates Claude Code CLI, allowing you to interact with Claude directly from Discord threads.
 >
-> **Repository:** https://github.com/wilsonhoe/claude_discord  
-> **Last Updated:** 2026-05-03  
-> **Status:** Production-Ready
+> **Repository:** https://github.com/wilsonhoe/claude_discord
+> **Upstream:** https://github.com/fredchu/discord-claude-code-bot
+> **Last Updated:** 2026-05-03
 
 ---
 
@@ -12,11 +12,9 @@
 
 - [Quick Start](#quick-start)
 - [What Is This](#what-is-this)
-- [Architecture Overview](#architecture-overview)
-- [The Agent Team](#the-agent-team)
+- [Features](#features)
 - [Documentation Index](#documentation-index)
 - [Repository Structure](#repository-structure)
-- [Key Principles](#key-principles)
 - [Safety & Secrets Policy](#safety--secrets-policy)
 
 ---
@@ -24,35 +22,38 @@
 ## Quick Start
 
 ```bash
-# 1. Clone the bot source (separate repo)
-git clone https://github.com/fredchu/discord-claude-code-bot
+# 1. Clone this repo
+git clone https://github.com/wilsonhoe/claude_discord.git
+cd claude_discord
 
-# 2. Configure environment
+# 2. Install dependencies
+npm install
+
+# 3. Configure environment
 cp .env.example .env
-# Edit .env: add DISCORD_BOT_TOKEN, CLAUDE_API_KEY, etc.
+# Edit .env: add your DISCORD_TOKEN, DEFAULT_CWD, etc.
 
-# 3. Start the bot via systemd (NEVER manually)
+# 4. Start the bot via systemd (NEVER manually)
 systemctl --user start discord-claude-ubuntu.service
 
-# 4. Verify single instance
+# 5. Verify single instance
 ps aux | grep "tsx src/index" | grep -v grep | wc -l   # should be 1
 
-# 5. Health check
+# 6. Health check
 systemctl --user status discord-claude-ubuntu.service --no-pager
 ```
 
-**Critical Rule:** Always use `systemctl` to manage the bot. Never `npm start` or `nohup` directly — this causes duplicate instances and duplicate Discord responses. See [docs/03-lessons-learned.md](docs/03-lessons-learned.md).
+**Critical Rule:** Always use `systemctl` to manage the bot. Never `npm start` or `nohup` directly — this creates duplicate instances and duplicate Discord responses. See [docs/03-lessons-learned.md](docs/03-lessons-learned.md).
 
 ---
 
 ## What Is This
 
-This repository documents a production-grade Discord bot integration for **Claude Code CLI** that serves as:
+This repository contains:
 
-1. **Primary Interface** — Users interact with Claude via Discord threads and @mentions
-2. **Multi-Agent Orchestrator** — Routes commands to Lisa, Nyx, Kael, and William
-3. **Session Bridge** — Persists Claude sessions across Discord threads with SQLite
-4. **Health Monitor** — Auto-detects and recovers from stuck processes, stale sessions, and duplicates
+1. **Complete source code** of the Discord bot (forked from [fredchu/discord-claude-code-bot](https://github.com/fredchu/discord-claude-code-bot))
+2. **Hardened modifications** — stale session auto-detection, duplicate prevention
+3. **Production documentation** — every issue encountered and how to fix it
 
 **Two distinct Discord systems cooperate:**
 
@@ -63,69 +64,17 @@ This repository documents a production-grade Discord bot integration for **Claud
 
 ---
 
-## Architecture Overview
+## Features
 
-```
-Discord User
-     |
-     v
-Discord Thread / @mention
-     |
-     v
-+----------------------------------+
-| discord-claude-code-bot          |
-| (Node.js, discord.js)            |
-| - SQLite session persistence     |
-| - Stale session auto-cleanup     |
-| - Duplicate instance prevention  |
-+----------------------------------+
-     |
-     v
-spawns: claude -p --resume <uuid>
-     |
-     v
-+----------------------------------+
-| Claude Code CLI Session          |
-| - Executes commands              |
-| - Writes to bridge files         |
-| - Spawns sub-agents (Lisa/Nyx)   |
-+----------------------------------+
-     |
-     v
-+----------------------------------+
-| Bridge / Coordination Layer      |
-| - BRIDGE_LISA.md                 |
-| - Telegram INBOX/OUTBOX          |
-| - GitHub Live Chat (optional)    |
-+----------------------------------+
-     |
-     v
-Lisa / Nyx / Kael / William (OpenClaw agents)
-```
-
-**Session Persistence:**
-- Each Discord thread maps to a unique Claude Code session UUID
-- Mapping stored in SQLite (`threads.db`)
-- Session files stored in `~/.claude/projects/<cwd>/`
-- After system restart, stale mappings are auto-detected and cleaned
-
----
-
-## The Agent Team
-
-| Agent | Platform | Role | Discord Identity |
-|-------|----------|------|-----------------|
-| **Claude (Ubuntu)** | Claude Code CLI + Discord | Team Lead, orchestrator | `Claude_ubuntu#9135` |
-| **Lisa** | OpenClaw / Discord | Executor, researcher | `Lisa#7140` |
-| **Nyx** | OpenClaw / Discord | Growth, marketing | `Nyx_Growth#1299` |
-| **Kael** | OpenClaw / Discord | Executor | `Kael_Executor#8338` |
-| **William** | OpenClaw / Discord | Coder, developer | `William#xxxx` |
-
-**Communication Patterns:**
-- **Direct:** User @mentions Claude in Discord thread
-- **Indirect:** Claude writes to bridge file → Lisa reads and acts
-- **Broadcast:** Coordinator cron fetches all Discord messages, routes to agent INBOXes
-- **Live Chat:** GitHub-based persistent chat for long-form collaboration
+- **Thread-based sessions** — Each Discord thread maps to a persistent Claude session
+- **SQLite persistence** — Thread-to-session mappings survive bot restarts
+- **Stale session auto-detection** — Automatically recovers from "No conversation found" errors
+- **Streaming responses** — Live "thinking..." indicators while Claude works
+- **Attachment support** — Upload files to Discord, Claude reads them
+- **Slash commands** — `/help`, `/new`, `/model`, `/cd`, `/stop`, `/sessions`, `/resume-local`, `/handback`
+- **Local session resume** — Hand off between terminal and Discord seamlessly
+- **Message chunking** — Long responses split into Discord-friendly chunks
+- **Button interactions** — AskUserQuestion rendered as Discord buttons
 
 ---
 
@@ -133,14 +82,12 @@ Lisa / Nyx / Kael / William (OpenClaw agents)
 
 | Doc | What You'll Learn |
 |-----|-------------------|
-| [docs/01-architecture.md](docs/01-architecture.md) | Full system architecture, data flow, component interactions |
+| [docs/01-architecture.md](docs/01-architecture.md) | System architecture, data flow, component interactions |
 | [docs/02-setup-guide.md](docs/02-setup-guide.md) | Step-by-step setup from zero to running bot |
-| [docs/03-lessons-learned.md](docs/03-lessons-learned.md) | 10+ hard-won lessons from production incidents |
+| [docs/03-lessons-learned.md](docs/03-lessons-learned.md) | Hard-won lessons from production incidents |
 | [docs/04-swot-analysis.md](docs/04-swot-analysis.md) | Strengths, Weaknesses, Opportunities, Threats |
 | [docs/05-troubleshooting.md](docs/05-troubleshooting.md) | Every known issue and exact fix procedure |
-| [docs/06-multi-agent-coordination.md](docs/06-multi-agent-coordination.md) | How Lisa/Nyx/Kael bots are configured and isolated |
 | [docs/07-stale-session-detection.md](docs/07-stale-session-detection.md) | Technical deep dive: auto-cleanup implementation |
-| [docs/08-bridge-system.md](docs/08-bridge-system.md) | Bridge files, protocols, and failure modes |
 | [docs/09-health-monitoring.md](docs/09-health-monitoring.md) | Cron jobs, health checks, and monitoring stack |
 
 ---
@@ -149,25 +96,28 @@ Lisa / Nyx / Kael / William (OpenClaw agents)
 
 ```
 claude_discord/
-├── README.md                          # This file
-├── docs/                              # Comprehensive documentation
+├── README.md              # This file
+├── CHANGELOG.md           # Upstream changelog
+├── LICENSE                # MIT License (upstream)
+├── package.json           # Dependencies
+├── tsconfig.json          # TypeScript config
+├── .env.example           # Environment template
+├── .gitignore             # Git ignore rules
+├── src/
+│   └── index.ts           # Main bot source code
+├── docs/                  # Documentation
 │   ├── 01-architecture.md
 │   ├── 02-setup-guide.md
 │   ├── 03-lessons-learned.md
 │   ├── 04-swot-analysis.md
 │   ├── 05-troubleshooting.md
-│   ├── 06-multi-agent-coordination.md
 │   ├── 07-stale-session-detection.md
-│   ├── 08-bridge-system.md
 │   └── 09-health-monitoring.md
-├── scripts/                           # Utility scripts (templates)
-│   ├── start-bot.sh.example
-│   ├── health-check.sh.example
-│   └── kill-duplicates.sh
-└── .github/                           # (Optional) workflows
+└── scripts/               # Utility scripts
+    ├── duplicate-check.sh
+    ├── kill-stuck-sessions.sh
+    └── start-bot.sh.example
 ```
-
-> **Note:** This repository contains documentation and templates only. The actual bot source code lives at [fredchu/discord-claude-code-bot](https://github.com/fredchu/discord-claude-code-bot).
 
 ---
 
@@ -176,9 +126,7 @@ claude_discord/
 1. **Systemd Only** — The bot is managed exclusively by systemd. Manual starts create duplicates.
 2. **Kill Duplicates, Preserve One** — When fixing duplicate responses, kill extra instances but leave one running.
 3. **Auto-Heal Sessions** — Stale session mappings are detected and cleaned automatically on startup and per-message.
-4. **Bridge Protocol** — Agents must use canonical bridge file paths. Wrong paths cause silent message loss.
-5. **Token Hygiene** — Session files are cleared proactively before hitting 60k token limits.
-6. **One Instance Per Bot** — Each agent (Lisa, Nyx, Kael) has its own isolated database and systemd service.
+4. **Token Hygiene** — Session files are cleared proactively before hitting 60k token limits.
 
 ---
 
@@ -187,21 +135,20 @@ claude_discord/
 This repository intentionally **excludes** the following:
 
 - Discord bot tokens
-- API keys (Claude, OpenAI, etc.)
-- Wallet addresses or cryptocurrency keys
+- Claude API keys
 - File paths to secret storage
 - Specific guild/channel IDs where sensitive
 - Session file contents containing conversation data
 
 All secrets are managed via:
-- `.env` files (not committed)
+- `.env` file (not committed — see `.env.example` for template)
 - Systemd environment files
-- `~/.openclaw/secrets/` directory (outside repo)
 
-**To use these docs:** Replace all `<PLACEHOLDER>` values with your own secrets.
+**To use this bot:** Copy `.env.example` to `.env` and fill in your own secrets.
 
 ---
 
 ## License
 
-Documentation is provided as-is for educational and operational reference. Bot source code remains under its original license at [fredchu/discord-claude-code-bot](https://github.com/fredchu/discord-claude-code-bot).
+Bot source code remains under its original MIT license at [fredchu/discord-claude-code-bot](https://github.com/fredchu/discord-claude-code-bot).
+Documentation is provided as-is for educational and operational reference.

@@ -1,6 +1,6 @@
 # Lessons Learned
 
-> Hard-won knowledge from running a Claude Discord multi-agent system in production. These are organized by severity and frequency.
+> Hard-won knowledge from running a Claude Discord bot in production. These are organized by severity and frequency.
 
 ---
 
@@ -171,32 +171,31 @@ fi
 
 ---
 
-## Lesson 5: Session Token Limit Blocks Agents
+## Lesson 5: Session Token Limit Blocks Bot
 
 **Severity:** HIGH  
-**Frequency:** Monthly (Lisa, Nyx, Kael)
+**Frequency:** Monthly
 
 ### Problem
-Agents stop responding when session files reach 60k/60k tokens. Auto-compaction fails during tool loops.
+Bot stops responding when session files reach 60k/60k tokens. Auto-compaction fails during tool loops.
 
 ### The Incident (2026-04-11)
-- Lisa, Nyx, and Kael all stopped responding in Discord
+- Bot stopped responding in Discord
 - Session files maxed at 60k tokens
 - Error: "Agent couldn't generate a response. Note: some tool actions may have already been executed"
 - No automatic recovery
 
 ### The Fix
 ```bash
-# 1. Clear session files for an agent
-rm ~/.openclaw/agents/<agent>/sessions/*.jsonl
-rm ~/.openclaw/agents/<agent>/sessions/*.lock
+# 1. Clear session files
+rm ~/.claude/projects/*/*.jsonl
+rm ~/.claude/projects/*/*.lock
 
-# 2. Update sessions.json to remove Discord entries
-# Edit ~/.openclaw/agents/<agent>/sessions.json
-# Remove entries where channel = "discord"
+# 2. Clear thread database (start fresh)
+rm threads.db
 
-# 3. Restart Discord gateway for each agent
-systemctl --user restart openclaw-gateway-<agent>.service
+# 3. Restart bot
+systemctl --user restart discord-claude-ubuntu.service
 ```
 
 ### Prevention
@@ -213,11 +212,11 @@ systemctl --user restart openclaw-gateway-<agent>.service
 **Frequency:** 1 incident
 
 ### Problem
-Lisa Discord bot stopped responding. Session file bloated to 448KB with only 186 lines (massive JSON entries causing context overflow).
+Bot stopped responding. Session file bloated to 448KB with only 186 lines (massive JSON entries causing context overflow).
 
 ### The Incident (2026-04-11)
 - Error: "Agent couldn't generate a response"
-- Session file: `~/.openclaw/agents/lisa/sessions/<uuid>.jsonl`
+- Session file: `~/.claude/projects/<cwd>/<uuid>.jsonl`
 - Size: 448KB (normally ~10-50KB)
 - Lines: 186 (massive tool result JSON per line)
 - Auto-compaction failed during tool loop
@@ -231,60 +230,18 @@ cp session.jsonl session.jsonl.bak
 # Keep only: session header + system reset message
 # Result: 2 lines, ~4KB
 
-# 3. Restart gateway
-systemctl --user restart openclaw-gateway-lisa.service
+# 3. Restart bot
+systemctl --user restart discord-claude-ubuntu.service
 ```
 
 ### Prevention
 - Monitor session file sizes regularly (alert at 100KB)
 - Implement automatic rotation at 100KB threshold
-- Watch for models with low context efficiency (qwen3.5:cloud)
-- Review agent tool usage — excessive tool results bloat sessions
+- Review bot tool usage — excessive tool results bloat sessions
 
 ---
 
-## Lesson 7: Bridge File Mismatch Causes Silent Message Loss
-
-**Severity:** HIGH  
-**Frequency:** Recurring (3+ incidents)
-
-### Problem
-Lisa kept using the wrong bridge file path. Messages were written to a deprecated location, so they were never read by the other agent.
-
-### The Incident (2026-04-12)
-- Lisa created/used: `/home/user/bridge/LISA_TO_CLAUDE.md`
-- Correct path: `~/.openclaw/workspace-lisa/BRIDGE_LISA.md`
-- Result: Messages missed, delays, confusion
-- Happened multiple times despite reminders
-
-### The Fix
-```bash
-# 1. DELETE wrong file (prevents accidental reuse)
-rm /home/user/bridge/LISA_TO_CLAUDE.md
-
-# 2. Post protocol message in CORRECT bridge file
-# 3. Send direct notification to agent
-```
-
-### Bridge Protocol (Canonical)
-```
-CORRECT FILE (ONLY):
-  ~/.openclaw/workspace-lisa/BRIDGE_LISA.md
-
-WRONG FILES (NEVER USE):
-  /home/user/bridge/LISA_TO_CLAUDE.md  (DELETED)
-  Any other path
-```
-
-### Prevention
-- Delete deprecated bridge files after migration
-- Use symlink from old path to new path (temporary)
-- Implement bridge path validation in agent code
-- Consider migrating fully to GitHub Live Chat (persistent, canonical URL)
-
----
-
-## Lesson 8: Stuck claude -p Processes Block New Messages
+## Lesson 7: Stuck claude -p Processes Block New Messages
 
 **Severity:** MEDIUM  
 **Frequency:** Weekly
@@ -323,12 +280,12 @@ ps aux | grep "claude -p" | grep -v grep
 ### Prevention
 - Implement `/stop` slash command (already in bot)
 - Add cron job to auto-kill stuck processes every 15 minutes
-- Monitor with `session-health-check.sh`
+- Monitor with `scripts/kill-stuck-sessions.sh`
 - Never kill the bot itself (`tsx src/index.ts`), only `claude -p` children
 
 ---
 
-## Lesson 9: Multiple Discord Systems Can Interfere
+## Lesson 8: Multiple Discord Systems Can Interfere
 
 **Severity:** MEDIUM  
 **Frequency:** 1 incident
@@ -360,7 +317,7 @@ Two separate Discord systems running simultaneously caused confusion about which
 
 ---
 
-## Lesson 10: Session Files Lost on Restart
+## Lesson 9: Session Files Lost on Restart
 
 **Severity:** MEDIUM  
 **Frequency:** Every system restart
@@ -373,57 +330,23 @@ After laptop/server restart, Discord bot tries to resume sessions that no longer
 stderr: No conversation found with session ID: ef7d06fe-c49a-44ed-ae00-65971379005d
 ```
 
-### The Fix (Implemented 2026-05-03)
-Added automatic stale session detection to `src/index.ts`:
+### The Fix (Implemented in this repo)
+The upstream bot doesn't handle this. We've implemented automatic stale session detection in `getOrCreate()`:
 
-1. **`isSessionValid(entry)`** — Checks if session file exists on disk
-2. **Updated `getOrCreate()`** — Validates sessions before use; clears stale mappings
-3. **`cleanupStaleSessions()`** — Scans all mappings on startup, removes stale ones
-4. **Real-time detection** — Per-message validation creates fresh sessions when needed
-
-### How It Works
 - When bot receives a message, checks if session file exists
-- If missing (after restart), automatically:
-  - Deletes stale mapping from SQLite
-  - Creates fresh session ID
-  - Saves new mapping
-- Logs cleanup actions: `[discord-cc-bot] clearing stale session for thread...`
+- If missing (after restart), automatically creates fresh session ID
+- User gets new session transparently
+
+See [docs/07-stale-session-detection.md](docs/07-stale-session-detection.md) for technical details.
 
 ### Prevention
-- Implement `isSessionValid()` + `cleanupStaleSessions()` in your bot
-- Run cleanup on startup (`Events.ClientReady`)
-- Run validation on every `getOrCreate()` call
-- Use persistent storage for session files (not tmpfs)
+- Use this hardened version of the bot (includes stale session detection)
+- Store session files on persistent storage (not tmpfs)
+- Run cleanup on startup and per-message
 
 ---
 
-## Lesson 11: Agent Hallucination on File Existence
-
-**Severity:** LOW  
-**Frequency:** Recurring
-
-### Problem
-Lisa sometimes reports completing tasks or finding files that don't exist.
-
-### Example
-- Lisa: "I've created the file at /path/to/file.md"
-- Reality: File does not exist
-- Cause: Hallucination during tool loop or incorrect path construction
-
-### The Fix
-- Implement grounding framework: require evidence before claims
-- Verify all Lisa claims with `ls` or `cat`
-- Use absolute paths, not relative
-- Add file existence checks in agent logic
-
-### Prevention
-- Grounding Framework: Agents must provide evidence for factual claims
-- File operations require confirmation read-back
-- Use `test -f` or `fs.existsSync()` before reporting success
-
----
-
-## Lesson 12: Duplicate Prevention Requires Singleton Wrapper
+## Lesson 10: Duplicate Prevention Requires Singleton Wrapper
 
 **Severity:** MEDIUM  
 **Frequency:** Ongoing risk
@@ -456,7 +379,6 @@ rm -f "$PIDFILE"
 
 ### Prevention
 - Use PID files for singleton enforcement
-- Add `startingSessions` Set in message handler for race condition protection
 - Document systemd-only policy prominently
 - Consider using `flock` for file-based locking
 
@@ -468,9 +390,7 @@ rm -f "$PIDFILE"
 2. **Kill duplicates, keep one** — Check process count before and after fixes
 3. **Match health checks to actual processes** — `pgrep` must find the real process name
 4. **Use `Restart=on-failure`** — Never `Restart=always`
-5. **Validate bridge paths** — Delete old paths, enforce canonical locations
-6. **Monitor session sizes** — Clear before 60k token limit
-7. **Auto-detect stale sessions** — Implement `isSessionValid()` + `cleanupStaleSessions()`
-8. **Kill stuck `claude -p`** — But never kill the bot itself
-9. **Verify agent claims** — Files may not exist even if agent says they do
-10. **Singleton enforcement** — PID files or systemd prevent race conditions
+5. **Monitor session sizes** — Clear before 60k token limit
+6. **Auto-detect stale sessions** — Use this hardened bot version
+7. **Kill stuck `claude -p`** — But never kill the bot itself
+8. **Singleton enforcement** — PID files or systemd prevent race conditions

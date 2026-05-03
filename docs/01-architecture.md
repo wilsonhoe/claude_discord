@@ -1,66 +1,42 @@
 # System Architecture
 
-> Complete technical architecture of the Claude Discord multi-agent system.
+> Complete technical architecture of the Claude Discord bot.
 
 ---
 
 ## 1. High-Level Architecture
 
 ```
-+-------------------------------------------------------------+
-|                       DISCORD PLATFORM                       |
-|  +------------------+  +------------------+  +----------+  |
-|  | #command_center  |  | Thread: task-123 |  | DM User  |  |
-|  +------------------+  +------------------+  +----------+  |
-+-------------------------------------------------------------+
-                           |
-                           v
-+-------------------------------------------------------------+
-|                  DISCORD GATEWAY (WebSocket)                 |
-|              Events: MESSAGE_CREATE, THREAD_CREATE           |
-+-------------------------------------------------------------+
-                           |
-           +---------------+---------------+
-           |                               |
-           v                               v
-+------------------------+      +------------------------+
-| discord-claude-code-bot|      | MCP Discord Plugin     |
-| (Standalone Node.js)   |      | (In-process tools)     |
-| - Listens to gateway   |      | - mcp_discord_reply    |
-| - Spawns claude -p     |      | - mcp_discord_fetch    |
-| - Auto-responds        |      | - Passive / no auto    |
-+------------------------+      +------------------------+
-           |
-           v
-+-------------------------------------------------------------+
-|                 THREAD DATABASE (SQLite)                     |
-|  Table: threads                                             |
-|  Columns: threadId, sessionId, cwd, model, createdAt, ...   |
-|  - Maps Discord thread → Claude session UUID                 |
-|  - Auto-cleans stale mappings on startup                     |
-|  - Per-agent isolation: claude-threads.db, lisa-threads.db  |
-+-------------------------------------------------------------+
-                           |
-           +---------------+---------------+
-           |                               |
-           v                               v
-+------------------------+      +------------------------+
-| Claude Code CLI        |      | OpenClaw Agents        |
-| - Executed via `claude |      | - Lisa (executor)      |
-|   -p --resume <uuid>`  |      | - Nyx (growth)         |
-| - Working dir: project |      | - Kael (executor)      |
-|   folder               |      | - William (coder)      |
-| - Writes bridge files  |      |                        |
-+------------------------+      +------------------------+
-           |
-           v
-+-------------------------------------------------------------+
-|                    COORDINATION LAYER                        |
-|  +------------------+  +------------------+  +----------+    |
-|  | BRIDGE_LISA.md   |  | Telegram INBOX   |  | GitHub   |  |
-|  | (file bridge)    |  | (message queue)  |  | LiveChat |  |
-|  +------------------+  +------------------+  +----------+  |
-+-------------------------------------------------------------+
+Discord User
+     |
+     v
+Discord Thread / @mention
+     |
+     v
++----------------------------------+
+| discord-claude-code-bot          |
+| (Node.js, discord.js)            |
+| - SQLite session persistence     |
+| - Stale session auto-cleanup     |
+| - Duplicate instance prevention  |
++----------------------------------+
+     |
+     v
+spawns: claude -p --resume <uuid>
+     |
+     v
++----------------------------------+
+| Claude Code CLI Session          |
+| - Executes commands              |
+| - Writes responses               |
++----------------------------------+
+     |
+     v
++----------------------------------+
+| Discord Thread                   |
+| - Bot sends response             |
+| - User continues conversation    |
++----------------------------------+
 ```
 
 ---
@@ -81,16 +57,14 @@
 
 **Key Files:**
 - `src/index.ts` — Main bot logic, event handlers, message processing
-- `src/threads.ts` — SQLite database operations, session mapping
-- `src/commands.ts` — Slash command definitions (/help, /new, /model, etc.)
 - `threads.db` — SQLite database with WAL mode
 
 **Environment Variables:**
 ```bash
-DISCORD_BOT_TOKEN=<token>          # Discord bot application token
-CLAUDE_HOME=/home/user/.claude     # Claude Code config directory
-THREADS_DB_PATH=threads.db         # SQLite file path (per-agent override)
-AGENT_SYSTEM_PROMPT=<prompt>       # Agent identity override
+DISCORD_TOKEN=<token>              # Discord bot application token
+DEFAULT_CWD=/path/to/workdir       # Default working directory
+CLAUDE_BIN=claude                  # Claude CLI command (default: claude)
+GUILD_ID=<guild-id>                # Optional: restrict slash commands to guild
 ```
 
 ### 2.2 MCP Discord Plugin (In-Process Tools)
@@ -114,41 +88,31 @@ CREATE TABLE threads (
   threadId TEXT PRIMARY KEY,
   sessionId TEXT NOT NULL,
   cwd TEXT NOT NULL,
-  model TEXT,
-  createdAt INTEGER,
-  started INTEGER DEFAULT 0,
+  model TEXT NOT NULL,
+  createdAt INTEGER NOT NULL,
+  started INTEGER NOT NULL DEFAULT 0,
   lastBotMessageId TEXT,
-  isLocalResume INTEGER DEFAULT 0
+  isLocalResume INTEGER NOT NULL DEFAULT 0
 );
 ```
 
 **Operations:**
 - `getOrCreate(threadId)` — Returns existing or creates new mapping
 - `updateLastMessage(threadId, messageId)` — Tracks last bot message
-- `cleanupStaleSessions()` — Removes entries with missing session files
-- `delete(threadId)` — Removes mapping (used in stale cleanup)
-
-**Isolation Strategy:**
-Each agent has its own database file:
-- `claude-threads.db` — Claude_ubuntu bot
-- `lisa-threads.db` — Lisa bot
-- `nyx-threads.db` — Nyx bot
-- `kael-threads.db` — Kael bot
-
-This prevents session collisions between agents.
+- `saveEntry(threadId, entry)` — Persists mapping
+- `loadMap()` — Loads all mappings into memory
 
 ### 2.4 Claude Code CLI Sessions
 
 **Spawn Command:**
 ```bash
-claude -p --resume <sessionId> --cwd <workingDir>
+claude -p --resume <sessionId> --model <model> --cwd <workingDir>
 ```
 
 **Session File Location:**
 ```
 ~/.claude/projects/<sanitized-cwd>/
   <sessionId>.jsonl          # Conversation history
-  <sessionId>.lock           # Lock file
 ```
 
 **Lifecycle:**
@@ -158,23 +122,6 @@ claude -p --resume <sessionId> --cwd <workingDir>
 4. Claude processes message, writes response to stdout
 5. Bot captures stdout and sends to Discord
 6. Process exits (normal) or gets stuck (abnormal)
-
-### 2.5 Coordination Layer
-
-**Bridge Files:**
-- Canonical path: `~/.openclaw/workspace-<agent>/BRIDGE_<AGENT>.md`
-- Format: Markdown with headers for sender, timestamp, message
-- Protocol: Write-only, read by other agent's bridge monitor
-
-**Telegram INBOX/OUTBOX:**
-- Files: `telegram-inbox.md`, `telegram-outbox.md`
-- Used when Discord is unavailable or for mobile notifications
-
-**GitHub Live Chat:**
-- Repo: `beautiful-talking`
-- File: `chat/LIVE-CHAT.md`
-- Trigger files: `sync/trigger-claude.md`, `sync/trigger-lisa.md`
-- Cron syncs every minute
 
 ---
 
@@ -191,8 +138,7 @@ Bot: onMessageCreate()
     v
 getOrCreate(threadId)
     |---> Check SQLite for existing mapping
-    |---> If found: validate session file exists (isSessionValid)
-    |---> If stale: delete mapping, create new UUID
+    |---> If found: return existing
     |---> If new: generate UUID, insert into DB
     |
     v
@@ -202,7 +148,7 @@ Spawn: claude -p --resume <sessionId> --cwd <dir>
 Claude processes message
     |
     v
-Bot captures stdout
+Bot captures stdout (streaming)
     |
     v
 Send message to Discord thread
@@ -214,48 +160,13 @@ Send message to Discord thread
 Bot startup (Events.ClientReady)
     |
     v
-cleanupStaleSessions()
-    |---> SELECT * FROM threads
-    |---> For each entry: check if session file exists
-    |---> If missing: DELETE FROM threads WHERE threadId = ?
-    |---> Log: "removed N stale session mapping(s)"
+getOrCreate() detects missing session file
+    |---> Validate session file exists
+    |---> If missing: create fresh UUID
+    |---> Update database
     |
     v
 Bot ready, accepts messages
-    |
-    v
-Message arrives in thread with stale mapping
-    |
-    v
-getOrCreate() detects missing file
-    |
-    v
-Auto-creates fresh session, logs action
-```
-
-### 3.3 Multi-Agent Command Routing
-
-```
-User: @Claude_ubuntu "Lisa, check GitHub bounties"
-    |
-    v
-Claude receives message
-    |
-    v
-Claude writes to BRIDGE_LISA.md:
-    "Mission: Check GitHub bounties. Priority: HIGH"
-    |
-    v
-Lisa's bridge monitor detects file change
-    |
-    v
-Lisa reads bridge, executes task
-    |
-    v
-Lisa writes result back to bridge
-    |
-    v
-Claude reads result, summarizes for user in Discord
 ```
 
 ---
@@ -299,11 +210,10 @@ Claude reads result, summarizes for user in Discord
 | Discord Token | `.env` file, not committed |
 | Claude API Key | Environment variable |
 | Session Files | `~/.claude/projects/` (user home) |
-| Bridge Files | `~/.openclaw/workspace-<agent>/` (restricted) |
 | Database | File permissions 600 |
 | Process Spawn | Sanitized cwd, no shell injection |
 
 **Input Sanitization:**
-- Working directory validated against whitelist
+- Working directory validated against filesystem
 - No shell metacharacters passed to spawn
 - Thread IDs validated as Discord snowflakes
