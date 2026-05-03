@@ -70,6 +70,10 @@ scan_secrets() {
   files=$(git -C "$repo_path" diff --cached --name-only 2>/dev/null || git -C "$repo_path" ls-files)
 
   for file in $files; do
+    # Skip lock files and package metadata (legitimate long hashes)
+    if echo "$file" | grep -qE '(package-lock\.json|package\.json|yarn\.lock|pnpm-lock\.yaml|composer\.lock|Cargo\.lock|poetry\.lock|go\.sum)$'; then
+      continue
+    fi
     local filepath="$repo_path/$file"
     [ -f "$filepath" ] || continue
     if file "$filepath" | grep -q 'binary'; then continue; fi
@@ -113,9 +117,9 @@ while IFS= read -r gitdir; do
     continue
   fi
 
-  # Check if it has a wilsonhoe GitHub remote
+  # Check if it has a wilsonhoe GitHub remote (matches both HTTPS and SSH formats)
   remote_url=$(git -C "$repo_path" remote get-url origin 2>/dev/null || echo "")
-  if ! echo "$remote_url" | grep -q "github.com/wilsonhoe"; then
+  if ! echo "$remote_url" | grep -qE "github\.com[/:]wilsonhoe"; then
     echo "[$repo_name] SKIP — not a wilsonhoe repo (remote: ${remote_url:-none})" | tee -a "$LOG_FILE"
     SKIPPED=$((SKIPPED + 1))
     continue
