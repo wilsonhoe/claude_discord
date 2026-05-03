@@ -89,6 +89,7 @@ This repository contains:
 | [docs/05-troubleshooting.md](docs/05-troubleshooting.md) | Every known issue and exact fix procedure |
 | [docs/07-stale-session-detection.md](docs/07-stale-session-detection.md) | Technical deep dive: auto-cleanup implementation |
 | [docs/09-health-monitoring.md](docs/09-health-monitoring.md) | Cron jobs, health checks, and monitoring stack |
+| [docs/10-auto-sync.md](docs/10-auto-sync.md) | Auto-sync to GitHub with secret sanitization |
 
 ---
 
@@ -113,10 +114,26 @@ claude_discord/
 │   ├── 05-troubleshooting.md
 │   ├── 07-stale-session-detection.md
 │   └── 09-health-monitoring.md
-└── scripts/               # Utility scripts
-    ├── duplicate-check.sh
-    ├── kill-stuck-sessions.sh
-    └── start-bot.sh.example
+├── scripts/               # Utility scripts
+│   ├── duplicate-check.sh
+│   ├── kill-stuck-sessions.sh
+│   ├── start-bot.sh.example
+│   ├── github-auto-push.sh      # Weekly sync to GitHub
+│   ├── secret-sanitizer.sh      # Blocks secrets in pushes
+│   └── webhook-trigger.sh       # File watcher auto-push
+├── systemd/               # Systemd units
+│   ├── github-auto-push.timer   # Weekly timer
+│   ├── github-auto-push.service # Weekly service
+│   └── webhook-trigger.service  # File watcher service
+└── docs/                  # Documentation
+    ├── 01-architecture.md
+    ├── 02-setup-guide.md
+    ├── 03-lessons-learned.md
+    ├── 04-swot-analysis.md
+    ├── 05-troubleshooting.md
+    ├── 07-stale-session-detection.md
+    ├── 09-health-monitoring.md
+    └── 10-auto-sync.md
 ```
 
 ---

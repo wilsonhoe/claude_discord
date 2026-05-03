@@ -1,0 +1,14 @@
+[Unit]
+Description=File watcher webhook trigger for claude_discord
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/wls/claude_discord
+ExecStart=/home/wls/claude_discord/scripts/webhook-trigger.sh start
+ExecStop=/home/wls/claude_discord/scripts/webhook-trigger.sh stop
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

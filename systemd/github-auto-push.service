@@ -1,0 +1,12 @@
+[Unit]
+Description=Auto-push claude_discord to GitHub
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/wls/claude_discord
+ExecStart=/home/wls/claude_discord/scripts/github-auto-push.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
