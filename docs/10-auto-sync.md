@@ -1,61 +1,120 @@
 # Auto-Sync to GitHub
 
-> Automatically push local changes to `wilsonhoe/claude_discord` with secret sanitization.
+> Automatically push local changes to GitHub with secret sanitization. Works for a single repo or all your repos.
 
 ---
 
-## Overview
+## Two Modes
 
-Three mechanisms ensure your repo stays in sync with GitHub without manual intervention:
+| Mode | Use Case | Script | Timer |
+|------|----------|--------|-------|
+| **Single-repo** | Sync only `claude_discord` | `github-auto-push.sh` | `github-auto-push.timer` |
+| **Multi-repo** | Sync ALL `wilsonhoe/*` repos | `multi-repo-sync.sh` | `multi-repo-sync.timer` |
 
-| Mechanism | Trigger | Purpose |
-|-----------|---------|---------|
-| **Webhook Trigger** (File watcher) | Any file change in repo | Immediate sync when you edit docs |
-| **Weekly Timer** (Systemd) | Every Monday 9:17 AM | Periodic backup of all changes |
-| **Secret Sanitizer** (Pre-push) | Before every push | Blocks secrets from reaching GitHub |
+Use **multi-repo** if you maintain multiple GitHub repositories locally. Use **single-repo** if you only care about this one.
 
 ---
 
-## Quick Setup
+## Multi-Repo Sync (Recommended)
+
+### What It Does
+
+Scans `$HOME` for all git repositories, finds those with `github.com/wilsonhoe/*` remotes, and syncs each one:
+
+1. **Auto-discovers repos** — Finds `.git` directories up to depth 3
+2. **Skips forks & deps** — ComfyUI, SifNode, PrivacyLayer, Stellar-Guilds, private repos
+3. **Sanitizes each repo** — Runs secret scan before every push
+4. **Auto-commits** — Generic commit message with file count and repo name
+5. **Fetches & merges** — Pulls remote changes first, handles conflicts
+6. **Pushes** — Sends to `origin` on current branch
+7. **Logs everything** — Per-repo status in `~/.local/share/github-auto-sync/`
+
+### Quick Setup
 
 ```bash
 cd ~/claude_discord
-
-# 1. Make scripts executable
 chmod +x scripts/*.sh
 
-# 2. Install systemd user units
-cp systemd/github-auto-push.timer ~/.config/systemd/user/
-cp systemd/github-auto-push.service ~/.config/systemd/user/
-cp systemd/webhook-trigger.service ~/.config/systemd/user/
+# Install multi-repo timer
+cp systemd/multi-repo-sync.timer ~/.config/systemd/user/
+cp systemd/multi-repo-sync.service ~/.config/systemd/user/
 
-# 3. Reload systemd
 systemctl --user daemon-reload
+systemctl --user enable --now multi-repo-sync.timer
 
-# 4. Enable weekly timer
-systemctl --user enable github-auto-push.timer
-systemctl --user start github-auto-push.timer
-
-# 5. Start file watcher (webhook trigger)
-systemctl --user enable webhook-trigger.service
-systemctl --user start webhook-trigger.service
-
-# 6. Verify
+# Verify
 systemctl --user list-timers
-systemctl --user status webhook-trigger.service
+# Shows: multi-repo-sync.timer Mon 09:17:00 ...
+```
+
+### Dry Run (Test Before Enabling)
+
+```bash
+cd ~/claude_discord
+./scripts/multi-repo-sync.sh --dry-run
+```
+
+This shows which repos would be synced without actually committing or pushing.
+
+### Skipped Repos (Hardcoded)
+
+| Repo | Reason |
+|------|--------|
+| `ComfyUI` | Large upstream dependency |
+| `self-hosted-ai-starter-kit` | Upstream project |
+| `SifNode` | Fork |
+| `PrivacyLayer` | Fork |
+| `Stellar-Guilds` | Fork |
+| `.gstack` | Private session memory |
+| `gstack-brain-wls` | Private |
+| `Digital-Brain` | Private |
+
+Add more to the `SKIP_REPOS` array in `scripts/multi-repo-sync.sh`.
+
+### Logs
+
+```bash
+# Latest sync log
+ls -lt ~/.local/share/github-auto-sync/ | head -5
+
+# View last sync
+tail -50 ~/.local/share/github-auto-sync/multi-repo-sync-$(date +%Y%m%d)*.log
+
+# All syncs via journal
+journalctl --user -u multi-repo-sync.service -n 100 --no-pager
 ```
 
 ---
 
-## Scripts
+## Single-Repo Sync
 
-### 1. `scripts/github-auto-push.sh`
+Use this if you only want to sync `claude_discord` and nothing else.
 
-Main auto-push script. Handles the full workflow:
+### Quick Setup
+
+```bash
+cd ~/claude_discord
+chmod +x scripts/*.sh
+
+# Install single-repo timer + webhook
+cp systemd/github-auto-push.timer ~/.config/systemd/user/
+cp systemd/github-auto-push.service ~/.config/systemd/user/
+cp systemd/webhook-trigger.service ~/.config/systemd/user/
+
+systemctl --user daemon-reload
+systemctl --user enable --now github-auto-push.timer
+systemctl --user enable --now webhook-trigger.service
+```
+
+### Scripts
+
+#### `scripts/github-auto-push.sh`
+
+Main auto-push script for one repo:
 
 1. Checks remote connectivity
 2. Fetches latest changes from GitHub
-3. Detects local changes (modified, new, deleted files)
+3. Detects local changes
 4. Ignores potential secret files (`.env`, `.pem`, etc.)
 5. Stages all safe changes
 6. Runs secret sanitizer on staged files
@@ -63,25 +122,7 @@ Main auto-push script. Handles the full workflow:
 8. Pushes to `origin main`
 9. Logs everything to `/tmp/github-auto-push.log`
 
-**Usage:**
-```bash
-./scripts/github-auto-push.sh
-```
-
-**Commit message format:**
-```
-auto: weekly sync 2026-05-05
-
-Files changed: 3
-
-  - docs/02-setup-guide.md
-  - README.md
-  - scripts/new-script.sh
-
-🤖 Auto-sync by systemd timer
-```
-
-### 2. `scripts/secret-sanitizer.sh`
+#### `scripts/secret-sanitizer.sh`
 
 Scans staged files for secrets and blocks push if found.
 
@@ -100,17 +141,16 @@ Scans staged files for secrets and blocks push if found.
 # Manual scan
 ./scripts/secret-sanitizer.sh
 
-# As git pre-push hook (recommended)
+# As git pre-push hook
 ln -sf ../../scripts/secret-sanitizer.sh .git/hooks/pre-push
 ```
 
 **If false positive:**
 ```bash
-# Skip sanitizer for one push
 git push --no-verify
 ```
 
-### 3. `scripts/webhook-trigger.sh`
+#### `scripts/webhook-trigger.sh`
 
 File system watcher that triggers auto-push when files change.
 
@@ -124,67 +164,6 @@ sudo apt install inotify-tools
 ./scripts/webhook-trigger.sh start   # Start watching
 ./scripts/webhook-trigger.sh stop    # Stop watching
 ./scripts/webhook-trigger.sh status  # Check status
-```
-
-**Behavior:**
-- Watches entire repo directory (excluding `.git/`, logs, `threads.db`)
-- On change: waits 30 seconds for batching (multiple edits = one push)
-- Then runs `github-auto-push.sh`
-- Logs to `/tmp/github-webhook-trigger.log`
-
----
-
-## Systemd Units
-
-### Weekly Timer
-
-`systemd/github-auto-push.timer`:
-```ini
-[Unit]
-Description=Weekly GitHub auto-push for claude_discord
-
-[Timer]
-OnCalendar=Mon *-*-* 09:17:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-```
-
-`systemd/github-auto-push.service`:
-```ini
-[Unit]
-Description=Auto-push claude_discord to GitHub
-
-[Service]
-Type=oneshot
-WorkingDirectory=/home/user/claude_discord
-ExecStart=/home/user/claude_discord/scripts/github-auto-push.sh
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=default.target
-```
-
-### Webhook Trigger Service
-
-`systemd/webhook-trigger.service`:
-```ini
-[Unit]
-Description=File watcher webhook trigger for claude_discord
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=/home/user/claude_discord
-ExecStart=/home/user/claude_discord/scripts/webhook-trigger.sh start
-ExecStop=/home/user/claude_discord/scripts/webhook-trigger.sh stop
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
 ```
 
 ---
@@ -215,37 +194,40 @@ WantedBy=default.target
 
 ## Monitoring
 
-### Check Timer Status
+### Check Timers
 ```bash
 systemctl --user list-timers
 # Shows: NEXT LEFT LAST PASSED UNIT ACTIVATES
-# github-auto-push.timer Mon 09:17:00 2 days left - - github-auto-push.timer
+# multi-repo-sync.timer     Mon 09:17:00 2 days left
+# github-auto-push.timer    Mon 09:17:00 2 days left
 ```
 
-### Check Webhook Trigger
+### Check Services
 ```bash
+systemctl --user status multi-repo-sync.service
 systemctl --user status webhook-trigger.service
-# Shows: Active: active (running)
 ```
 
 ### View Logs
 ```bash
-# Auto-push logs
+# Multi-repo logs
+ls -lt ~/.local/share/github-auto-sync/
+journalctl --user -u multi-repo-sync.service -n 50 --no-pager
+
+# Single-repo logs
 journalctl --user -u github-auto-push.service -n 50 --no-pager
-
-# Webhook trigger logs
 tail -f /tmp/github-webhook-trigger.log
-
-# All sync logs
-tail -f /tmp/github-auto-push.log /tmp/github-webhook-trigger.log
 ```
 
 ### Manual Trigger
 ```bash
-# Trigger weekly timer immediately
+# Multi-repo sync now
+systemctl --user start multi-repo-sync.service
+
+# Single-repo sync now
 systemctl --user start github-auto-push.service
 
-# Trigger webhook manually
+# Webhook restart
 ./scripts/webhook-trigger.sh stop && ./scripts/webhook-trigger.sh start
 ```
 
@@ -263,20 +245,30 @@ git ls-remote origin HEAD
 ### "Secret sanitizer blocked the push"
 ```bash
 # Review what was flagged
-cat /tmp/github-auto-push.log
+cat ~/.local/share/github-auto-sync/multi-repo-sync-*.log
 
 # Fix the issue, then retry
-./scripts/github-auto-push.sh
+./scripts/multi-repo-sync.sh
 ```
 
 ### "No local changes to push"
 ```bash
-# Check git status
-git status
+# Check git status in each repo
+cd ~/repo-name && git status
 
 # If you expect changes but none detected:
 # - File might be in .gitignore
 # - File might be untracked and flagged as secret
+```
+
+### "Merge failed"
+```bash
+# Manual intervention needed
+cd ~/repo-name
+git status
+# Resolve conflicts, then:
+git add -A && git commit -m "merge: resolve conflicts"
+git push origin main
 ```
 
 ### "inotifywait not found"
@@ -293,4 +285,5 @@ systemctl --user restart webhook-trigger.service
 2. **Review auto-generated commits** — Check `git log` weekly to ensure no secrets slipped through
 3. **Rotate tokens if leaked** — If a secret was accidentally pushed, rotate it immediately
 4. **Use SSH keys for GitHub** — More secure than HTTPS with stored credentials
-5. **Separate secrets repo** — Keep `.env` files in a private repo or password manager, never in this repo
+5. **Separate secrets repo** — Keep `.env` files in a private repo or password manager, never in public repos
+6. **Check skip list** — Review `SKIP_REPOS` in `multi-repo-sync.sh` when you add new repos

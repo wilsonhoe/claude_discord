@@ -1,0 +1,13 @@
+[Unit]
+Description=Multi-repo GitHub auto-sync for wilsonhoe repos
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/wls/claude_discord
+ExecStart=/home/wls/claude_discord/scripts/multi-repo-sync.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

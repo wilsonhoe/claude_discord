@@ -118,12 +118,15 @@ claude_discord/
 │   ├── duplicate-check.sh
 │   ├── kill-stuck-sessions.sh
 │   ├── start-bot.sh.example
-│   ├── github-auto-push.sh      # Weekly sync to GitHub
+│   ├── github-auto-push.sh      # Single-repo auto-push
+│   ├── multi-repo-sync.sh       # Multi-repo auto-push (all wilsonhoe repos)
 │   ├── secret-sanitizer.sh      # Blocks secrets in pushes
 │   └── webhook-trigger.sh       # File watcher auto-push
 ├── systemd/               # Systemd units
-│   ├── github-auto-push.timer   # Weekly timer
-│   ├── github-auto-push.service # Weekly service
+│   ├── github-auto-push.timer   # Single-repo weekly timer
+│   ├── github-auto-push.service # Single-repo weekly service
+│   ├── multi-repo-sync.timer    # Multi-repo weekly timer
+│   ├── multi-repo-sync.service  # Multi-repo weekly service
 │   └── webhook-trigger.service  # File watcher service
 └── docs/                  # Documentation
     ├── 01-architecture.md
